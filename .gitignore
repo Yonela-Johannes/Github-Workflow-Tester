@@ -1,11 +1,15 @@
 # Logs and temporary files
 workflow.log
+*.log.tmp
 .DS_Store
 .env
 .env.local
 
 # IDE
-.vscode/
+# NOTE: .vscode/settings.json is deliberately NOT ignored here. Earlier it was
+# ignored locally but still tracked, which let an editor API key get committed.
+# Local overrides belong in .vscode/settings.local.json instead.
+.vscode/settings.local.json
 .idea/
 *.swp
 *.swo

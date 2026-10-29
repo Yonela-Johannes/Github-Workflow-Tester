@@ -4,18 +4,23 @@ An automated GitHub Actions workflow project that performs periodic random commi
 
 ## Overview
 
-This project demonstrates automated commit workflows using GitHub Actions. It runs on a scheduled interval (every 5 minutes) to automatically generate and push commits with random log entries to the repository.
+This project demonstrates automated commit workflows using GitHub Actions. It runs on a scheduled interval (hourly) to automatically generate and push commits with random log entries to the repository.
+
+> **Warning — read before enabling.** This workflow writes directly to your default branch every hour. At 2-4 commits per run that is roughly **48-96 commits per day** of synthetic history. Enable it on a dedicated test repository, not on a repository you care about. See [Caveats](#caveats-and-disclaimer).
 
 ## Features
 
 - **Automated Commits**: Automatically generates commits on a configurable schedule
 - **Random Entry Generation**: Creates random log entries with timestamps
-- **Scheduled Execution**: Runs via GitHub Actions on a cron schedule (every 5 minutes)
+- **Scheduled Execution**: Runs via GitHub Actions on a cron schedule (hourly)
 - **Manual Trigger**: Supports manual workflow dispatch for on-demand execution
 - **Error Handling**: Robust error detection and logging
 - **Multi-file Support**: Can commit changes to multiple files
 - **Debug Logging**: Comprehensive logging for troubleshooting
-- **Configuration Management**: Easy customization via `config.sh`
+- **Configuration Management**: Easy customization via `config.sh` with validation
+- **Concurrent-safe Pushes**: Merges the remote branch before pushing, so a run that starts behind does not fail
+- **Accurate Reporting**: Reports the real number of commits added per run
+- **Run Locking**: Overlapping runs exit cleanly instead of racing
 
 ## Project Structure
 
@@ -28,37 +33,39 @@ workflow-tester/
 │   └── random_commit.sh            # Main automation script with error handling
 ├── config.sh                        # Customizable configuration file
 ├── random.txt                       # Log file for commit entries
-├── workflow.log                     # Execution debug logs
+├── timestamps.log                   # Microsecond-precision event log
 ├── .gitignore                       # Git ignore patterns
-├── CONTRIBUTING.md                  # Contribution guidelines
 └── README.md                        # This file
 ```
+
+`workflow.log` is created at runtime and is intentionally not committed.
 
 ## How It Works
 
 ### Workflow Execution
 
-The GitHub Actions workflow (`auto-committer.yml`) triggers automatically every 5 minutes. When executed, it:
+The GitHub Actions workflow (`auto-committer.yml`) triggers automatically every hour. When executed, it:
 
-1. **Checks out** the repository using the GitHub token
+1. **Checks out** the repository using the GitHub token, from the latest remote state
 2. **Validates** repository state and git configuration
 3. **Configures Git** with author information and safety settings
-4. **Runs** the `random_commit.sh` script with error handling
-5. **Commits and pushes** changes to the main branch
-6. **Logs execution** details for debugging
-7. **Reports status** of the workflow run
+4. **Runs** the `random_commit.sh` script (failing the job if it fails)
+5. **Commits** each generated entry and **pushes** to the target branch
+6. **Uploads** `workflow.log` as a build artifact
+7. **Reports** the job status and the number of commits actually made
 
 ### Random Commit Script
 
 The improved `random_commit.sh` script now includes:
 
-- **Error handling** - Exits gracefully on errors with detailed messages
-- **Configuration loading** - Sources settings from `config.sh`
+- **Error handling** - Exits immediately with a clear message on any failure
+- **Configuration validation** - Rejects missing keys, non-integer values, and inverted ranges before committing anything
 - **Comprehensive logging** - Writes all actions to `workflow.log`
-- **Multi-file support** - Can update different files (random.txt, timestamps.log)
+- **Multi-file support** - Can update different files (`random.txt`, `timestamps.log`)
 - **Random delays** - Configurable delays between commits
-- **Git validation** - Checks git configuration before execution
-- **Push verification** - Confirms successful push operations
+- **Concurrency guard** - A second run exits instead of racing the first
+- **Remote sync** - Merges `origin/<branch>` before pushing if the remote moved ahead
+- **Push verification** - The run fails if the push fails
 
 Each log entry includes:
 - Current date and time
@@ -72,7 +79,7 @@ Each log entry includes:
 The `config.sh` file provides easy customization without modifying the main script:
 
 ```bash
-# Commit settings
+# Commit settings (inclusive range)
 MIN_COMMITS=2           # Minimum commits per run
 MAX_COMMITS=4           # Maximum commits per run
 
@@ -101,10 +108,11 @@ Edit the cron expression in [.github/workflows/auto-committer.yml](.github/workf
 ```yaml
 on:
   schedule:
-    - cron: "*/5 * * * *"  # Every 5 minutes
+    - cron: "0 * * * *"  # Every hour, on the hour
 ```
 
 **Cron Format**: `minute hour day month dayofweek`
+- `0 * * * *` = Every hour (current setting)
 - `*/5 * * * *` = Every 5 minutes
 - `*/15 * * * *` = Every 15 minutes
 - `0 */2 * * *` = Every 2 hours
@@ -130,7 +138,7 @@ git config --global user.email "your.email@example.com"
 
 ### Automatic Execution
 
-The workflow runs automatically based on the configured schedule (every 5 minutes by default).
+The workflow runs automatically based on the configured schedule (hourly by default).
 
 ### Manual Trigger
 
@@ -139,16 +147,19 @@ To trigger the workflow manually:
 1. Go to your repository on GitHub
 2. Click **Actions**
 3. Select **Auto Committer**
-4. Click **Run workflow**
+4. Optionally enter an exact **commit count**, then click **Run workflow**
+   (leave it empty to use the random range from `config.sh`)
 
 ### Local Testing
 
 To test the script locally:
 
 ```bash
-chmod +x scripts/random_commit.sh
 ./scripts/random_commit.sh
 ```
+
+This really commits **and pushes**. Against an unimportant branch or a scratch
+clone only. Set `MIN_COMMITS`/`MAX_COMMITS` temporarily to keep a test short.
 
 ## Files
 
@@ -158,9 +169,7 @@ chmod +x scripts/random_commit.sh
 | `scripts/random_commit.sh` | Enhanced automation script with error handling |
 | `config.sh` | Configuration file for easy customization |
 | `random.txt` | Log file where commit entries are appended |
-| `workflow.log` | Debug log from workflow executions |
 | `.gitignore` | Git ignore patterns for logs and temp files |
-| `CONTRIBUTING.md` | Guidelines for contributing to the project |
 | `README.md` | Project documentation |
 
 ## Use Cases
@@ -201,6 +210,9 @@ MIN_DELAY=60
 MAX_DELAY=300
 ```
 
+> Keep `MIN_COMMITS * MAX_DELAY` comfortably below the job's 20-minute timeout,
+> otherwise the workflow will be cancelled mid-run.
+
 ### Add More Files to Commit
 
 Modify the `COMMIT_FILES` array in `config.sh`:
@@ -209,7 +221,9 @@ Modify the `COMMIT_FILES` array in `config.sh`:
 COMMIT_FILES=("random.txt" "timestamps.log" "metrics.csv")
 ```
 
-Then update the script's case statement in `scripts/random_commit.sh` to handle new files.
+Then add a matching branch to the `case` statement in `scripts/random_commit.sh`.
+A file listed in `COMMIT_FILES` without a matching branch aborts the run (this
+prevents a typo from writing outside the repository).
 
 ### Customize Commit Messages
 
@@ -276,13 +290,19 @@ cat workflow.log
 git log --oneline -10
 ```
 
-## Contributing
+## Caveats and Disclaimer
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-- Report issues or suggest features via GitHub Issues
-- Submit improvements via Pull Requests
-- Follow the existing code style and conventions
+- **Scheduled runs are unreliable by design.** GitHub delays `schedule` triggers
+  under load and **disables scheduled workflows after 60 days** of repository
+  inactivity. Every run does write a commit, which resets that timer, but a
+  delayed run shows up as a burst of commits rather than an even spread.
+- **Commit-count accuracy.** The reported count reflects commits added by the
+  script. It excludes merge commits created while syncing with the remote.
+- **History inflation.** Thousands of synthetic commits make `git log`, blame
+  and pull requests hard to use. Do not enable this on a working codebase.
+- **Branch protection.** `main` usually rejects direct pushes. Configure the
+  target branch to allow the Actions bot, or point `TARGET_BRANCH` at a
+  scratch branch and set the `AUTO_COMMIT_BRANCH` repository variable to match.
 
 ## License
 
@@ -294,5 +314,5 @@ Created by RensithUdara
 
 ---
 
-**Last Updated**: December 2025
-**Version**: 2.0 (Enhanced with error handling and configuration management)
+**Last Updated**: October 2026
+**Version**: 2.1 (Hardened push/counting, validated config, accurate docs)

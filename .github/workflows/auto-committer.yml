@@ -2,13 +2,18 @@ name: Auto Committer
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       commit_count:
-        description: "Number of commits to create"
+        description: "Exact number of commits to create (leave empty to use the random range in config.sh)"
         required: false
-        default: "3"
+        default: ""
+        type: string
+
+concurrency:
+  group: auto-committer
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -16,28 +21,30 @@ permissions:
 jobs:
   auto-commit:
     runs-on: ubuntu-latest
-    
-    outputs:
-      commits_made: ${{ steps.commit.outputs.count }}
-      status: ${{ job.status }}
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # The default GITHUB_TOKEN is sufficient; no extra secret needed.
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Always start from the latest remote state.
+          ref: ${{ vars.AUTO_COMMIT_BRANCH || 'main' }}
           fetch-depth: 0
 
       - name: Configure Git
         run: |
           git config --global user.name "yonela-johannes"
           git config --global user.email "johannesyonela@gmail.com"
+          # Keep line endings stable so repeated runs can't produce noisy diffs.
+          git config --global core.autocrlf false
           git config --global core.safecrlf false
 
       - name: Validate repository state
         run: |
           echo "=== Git Status ==="
-          git status
+          git status --short --branch
           echo "=== Current Branch ==="
           git branch -v
           echo "=== Commit History (last 5) ==="
@@ -45,25 +52,33 @@ jobs:
 
       - name: Run random commit script
         id: commit
+        env:
+          COMMIT_COUNT_OVERRIDE: ${{ inputs.commit_count }}
         run: |
           chmod +x scripts/random_commit.sh
-          ./scripts/random_commit.sh
-          COMMIT_COUNT=$(git rev-list --count HEAD~1..HEAD 2>/dev/null || echo 0)
-          echo "count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
-        continue-on-error: true
-
-      - name: Check workflow logs
-        if: always()
-        run: |
-          if [ -f workflow.log ]; then
-            echo "=== Workflow Log ==="
-            cat workflow.log
+          if [ -n "${COMMIT_COUNT_OVERRIDE:-}" ]; then
+            if ! [[ "$COMMIT_COUNT_OVERRIDE" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::commit_count must be a positive integer, got '$COMMIT_COUNT_OVERRIDE'"
+              exit 1
+            fi
+            printf 'MIN_COMMITS=%s\nMAX_COMMITS=%s\n' \
+              "$COMMIT_COUNT_OVERRIDE" "$COMMIT_COUNT_OVERRIDE" >> config.sh
+            echo "Overriding commit count: $COMMIT_COUNT_OVERRIDE"
           fi
+          ./scripts/random_commit.sh
+
+      - name: Upload workflow log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: workflow.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Report status
         if: always()
         run: |
           echo "Job Status: ${{ job.status }}"
-          echo "Commits Made: ${{ steps.commit.outputs.count }}"
-
-          
+          echo "Commits Made: ${{ steps.commit.outputs.count || '0' }}"
+          echo "Target Branch: ${{ steps.commit.outputs.branch || vars.AUTO_COMMIT_BRANCH || 'main' }}"
