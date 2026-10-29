@@ -1,0 +1,69 @@
+name: Auto Committer
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      commit_count:
+        description: "Number of commits to create"
+        required: false
+        default: "3"
+
+permissions:
+  contents: write
+
+jobs:
+  auto-commit:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      commits_made: ${{ steps.commit.outputs.count }}
+      status: ${{ job.status }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "yonela-johannes"
+          git config --global user.email "johannesyonela@gmail.com"
+          git config --global core.safecrlf false
+
+      - name: Validate repository state
+        run: |
+          echo "=== Git Status ==="
+          git status
+          echo "=== Current Branch ==="
+          git branch -v
+          echo "=== Commit History (last 5) ==="
+          git log --oneline -5
+
+      - name: Run random commit script
+        id: commit
+        run: |
+          chmod +x scripts/random_commit.sh
+          ./scripts/random_commit.sh
+          COMMIT_COUNT=$(git rev-list --count HEAD~1..HEAD 2>/dev/null || echo 0)
+          echo "count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Check workflow logs
+        if: always()
+        run: |
+          if [ -f workflow.log ]; then
+            echo "=== Workflow Log ==="
+            cat workflow.log
+          fi
+
+      - name: Report status
+        if: always()
+        run: |
+          echo "Job Status: ${{ job.status }}"
+          echo "Commits Made: ${{ steps.commit.outputs.count }}"
+
+          
